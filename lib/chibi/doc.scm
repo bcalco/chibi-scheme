@@ -79,6 +79,95 @@
 (define (sxml->sexp-list x)
   (call-with-input-string (sxml-strip x) port->sexp-list))
 
+;;> Replace ansi escape sequences in a \var{str} with the corresponding sxml.
+(define (ansi->sxml str)
+  ;; TODO: ick
+  (let ((start (string-cursor-start str))
+        (end (string-cursor-end str)))
+    (let lp1 ((from start)
+              (to start)
+              (res '()))
+      (define (lookup str)
+        (case (string->number str)
+          ((0) '/) ((1) 'b) ((3) 'i) ((4) 'u) ((9) 's)
+          ((22) '/b) ((23) '/i) ((24) '/u) ((29) '/s)
+          ((30) 'black) ((31) 'red) ((32) 'green) ((33) 'yellow)
+          ((34) 'blue) ((35) 'magenta) ((36) 'cyan) ((37) 'white)
+          ((39) '/color)
+          (else #f)))
+      (define (collect from to res)
+        (if (string-cursor<? from to)
+            (cons (substring-cursor str from to) res)
+            res))
+      (define (finish)
+        (let ((ls (reverse (collect from to res))))
+          (if (and (= 1 (length ls)) (string? (car ls)))
+              (car ls)
+              (let lp1 ((ls ls) (cur '()) (res '()))
+                (define (close to)
+                  (let lp2 ((ls cur) (tmp '()))
+                    (cond
+                     ((null? ls)
+                      (list '() `(,@(reverse tmp) ,@res)))
+                     ((eq? to (car ls))
+                      (list (cdr ls) `((,to ,@tmp) ,@res)))
+                     ((and (eq? to 'color) (memq (car ls) '(b i u s)))
+                      ;; color close came to an open non-color
+                      ;; back off and leave this open
+                      (let ((s `(,(car ls) ,@(take-while string? tmp)))
+                            (tmp (drop-while string? tmp)))
+                        (list `(,@(reverse tmp) ,@(reverse s)) res)))
+                     ((symbol? (car ls))
+                      (lp2 (cdr ls) `((,(car ls) ,@(reverse tmp)))))
+                     ((and (pair? (car ls)) (eq? 'color to))
+                      (lp2 (cdr ls) `((,@(car ls) ,@(reverse tmp)))))
+                     ((pair? (car ls))
+                      (lp2 (cdr ls) `(,(car ls) ,@(reverse tmp))))
+                     (else
+                      (lp2 (cdr ls) `(,(car ls) ,@tmp))))))
+                (cond
+                 ((null? ls)
+                  `(span ,@(reverse (cadr (close #f)))))
+                 ((and (string? (car ls)) (pair? cur))
+                  (lp1 (cdr ls) (cons (car ls) cur) res))
+                 ((string? (car ls))
+                  (lp1 (cdr ls) cur (cons (car ls) res)))
+                 (else
+                  (case (car ls)
+                    ((b i u s) (lp1 (cdr ls) (cons (car ls) cur) res))
+                    ((/b) (apply lp1 (cdr ls) (close 'b)))
+                    ((/i) (apply lp1 (cdr ls) (close 'i)))
+                    ((/u) (apply lp1 (cdr ls) (close 'u)))
+                    ((/s) (apply lp1 (cdr ls) (close 's)))
+                    ((/) (apply lp1 (cdr ls) (close 'all)))
+                    ((/color) (apply lp1 (cdr ls) (close 'color)))
+                    (else
+                     (let ((style (string-append "color:"
+                                                 (symbol->string (car ls)))))
+                       (lp1 (cdr ls)
+                            (cons `(span (@ (style . ,style))) cur)
+                            res))))))))))
+      (if (string-cursor>=? to end)
+          (finish)
+          (let ((c (string-cursor-ref str to))
+                (sc2 (string-cursor-next str to)))
+            (if (and (= 27 (char->integer c))
+                     (string-cursor<? sc2 end)
+                     (eqv? #\[ (string-cursor-ref str sc2)))
+                (let ((sc3 (string-cursor-next str sc2)))
+                  (let lp2 ((sc4 sc3))
+                    (if (string-cursor>=? sc4 end)
+                        (finish)
+                        (let ((c2 (string-cursor-ref str sc4))
+                              (sc5 (string-cursor-next str sc4)))
+                          (if (eqv? #\m c2)
+                              (let ((code (lookup
+                                           (substring-cursor str sc3 sc4)))
+                                    (res (collect from to res)))
+                                (lp1 sc5 sc5 (if code (cons code res) res)))
+                              (lp2 sc5))))))
+                (lp1 from sc2 res)))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;> Extract the literate Scribble docs for module \var{mod-name} and
@@ -88,9 +177,11 @@
 (define (print-module-docs mod-name . o)
   (let ((out (if (pair? o) (car o) (current-output-port)))
         (render (or (and (pair? o) (pair? (cdr o)) (cadr o))
-                    sxml-display-as-text)))
+                    sxml-display-as-text))
+        (unexpanded?
+         (and (pair? o) (pair? (cdr o)) (pair? (cddr o)) (car (cddr o)))))
     (render
-     (generate-docs
+     ((if unexpanded? (lambda (sxml env) (fixup-docs sxml)) generate-docs)
       `((title ,(write-to-string mod-name))
         ,@(extract-module-docs mod-name #f))
       (make-module-doc-env mod-name))
@@ -274,14 +365,29 @@
          (force (or (env-ref env 'example-env) (current-environment)))))
     `(div
       ,(expand-codeblock `(,(car x) language: scheme ,@(cdr x)) env)
-      (code
-       (div (@ (class . "result"))
-            ,(call-with-output-string
-               (lambda (out)
-                 (protect (exn (#t (print-exception exn out)))
-                   (let ((res (eval expr example-env)))
-                     (display "=> " out)
-                     (write res out))))))))))
+      ,(let* ((res-out (open-output-string))
+              (tmp-out (open-output-string))
+              (tmp-err (open-output-string))
+              (res (parameterize ((current-output-port tmp-out)
+                                  (current-error-port tmp-err))
+                     (protect (exn (#t (print-exception exn tmp-err)))
+                       (eval expr example-env)))))
+         (display "=> " res-out)
+         (write res res-out)
+         (let ((res-str (get-output-string res-out))
+               (out-str (get-output-string tmp-out))
+               (err-str (get-output-string tmp-err)))
+           `(,@(if (string-null? out-str)
+                   '()
+                   `((div (@ (class . "output")) (pre ,(ansi->sxml out-str)))))
+             ,@(if (string-null? err-str)
+                   '()
+                   `((div (@ (class . "error")) (pre ,(ansi->sxml err-str)))))
+             ,@(if (and (or (not (string-null? err-str))
+                            (not (string-null? out-str)))
+                        (eq? res (if #f #f)))
+                   '()
+                   `((div (@ (class . "result")) (code ,res-str))))))))))
 
 (define (expand-example-import x env)
   (eval `(import ,@(cdr x))
@@ -321,7 +427,7 @@
     sxml)))
 
 (define (expand-procedure sxml env)
-  ((expand-section 'h3) `(,(car sxml) (rawcode ,@(cdr sxml))) env))
+  ((expand-section 'h4) `(,(car sxml) (rawcode ,@(cdr sxml))) env))
 
 (define (expand-macro sxml env)
   (expand-procedure sxml env))
@@ -360,50 +466,64 @@
 (define (get-contents x)
   (if (null? x)
       '()
-      (let ((d (caar x)))
-        (let lp ((ls (cdr x)) (parent (car (cdar x))) (kids '()) (res '()))
-          (define (collect)
-            (cons `(li ,parent ,(get-contents (reverse kids))) res))
-          ;; take a span of all sub-headers, recurse and repeat on next span
-          (cond
-           ((null? ls)
-            `(ol ,@(reverse (collect))))
-           ((> (caar ls) d)
-            (lp (cdr ls) parent (cons (car ls) kids) res))
-           (else
-            (lp (cdr ls) (car (cdar ls)) '() (collect))))))))
+      (let lp ((ls (cdr x))
+               (depth (caar x))
+               (parent (cadr (car x)))
+               (kids '())
+               (res '()))
+        (define (collect)
+          (cons `(li ,parent ,(get-contents (reverse kids))) res))
+        ;; take a span of all sub-headers, recurse and repeat on next span
+        (cond
+         ((null? ls)
+          `(ol ,@(reverse (collect))))
+         ((> (caar ls) depth)
+          (lp (cdr ls) depth parent (cons (car ls) kids) res))
+         (else
+          (lp (cdr ls) (caar ls) (cadr (car ls)) '() (collect)))))))
 
 (define (fix-header x)
-  `(html (head ,@(cond ((assq 'title x) => (lambda (x) (list x)))
-                       (else '()))
-               "\n"
-               (style (@ (type . "text/css"))
-                 "
-body {color: #000; background-color: #FFF}
-div#menu  {font-size: smaller; position: absolute; top: 50px; left: 0; width: 190px; height: 100%}
-div#main  {position: absolute; top: 0; left: 200px; width: 540px; height: 100%}
-div#notes {position: relative; top: 2em; left: 570px; max-width: 200px; height: 0px; font-size: smaller;}
+  `((!DOCTYPE html)
+    (html (head ,@(cond ((assq 'title x) => (lambda (x) (list x)))
+                        (else '()))
+                "\n"
+                (meta (@ (charset . "UTF-8")))
+                (style (@ (type . "text/css"))
+                  "
+body {color: #000; background-color: #FFFFF8;}
+div#menu  {font-size: smaller; position: absolute; top: 50px; left: 0; width: 250px; height: 100%}
+div#menu a:link {text-decoration: none}
+div#main  {font-size: large; position: absolute; top: 0; left: 260px; max-width: 590px; height: 100%}
+div#notes {position: relative; top: 2em; left: 620px; width: 200px; height: 0px; font-size: smaller;}
 div#footer {padding-bottom: 50px}
+div#menu ol {list-style-position:inside; padding-left: 5px; margin-left: 5px}
+div#menu ol ol {list-style: lower-alpha; padding-left: 15px; margin-left: 15px}
+div#menu ol ol ol {list-style: decimal; padding-left: 5px; margin-left: 5px}
+h2 { color: #888888; border-top: 3px solid #4588ba; }
+h3 { color: #666666; border-top: 2px solid #4588ba; }
+h4 { color: #222288; border-top: 1px solid #4588ba; }
 .result { color: #000; background-color: #FFEADF; width: 100%; padding: 3px}
+.output { color: #000; background-color: beige; width: 100%; padding: 3px}
+.error { color: #000; background-color: #F0B0B0; width: 100%; padding: 3px}
 .command { color: #000; background-color: #FFEADF; width: 100%; padding: 5px}
 "
-                 ,(highlight-style))
-               "\n")
-         (body
-          (div (@ (id . "menu"))
-               ,(let ((contents (get-contents (extract-contents x))))
-                  (match contents
-                    ;; flatten if we have only a single heading
-                    (('ol (li y sections ...))
-                     sections)
-                    (else contents))))
-          (div (@ (id . "main"))
-               ,@(map (lambda (x)
-                        (if (and (pair? x) (eq? 'title (car x)))
-                            (cons 'h1 (cdr x))
-                            x))
-                      x)
-               (div (@ (id . "footer")))))))
+                  ,(highlight-style))
+                "\n")
+          (body
+           (div (@ (id . "menu"))
+                ,(let ((contents (get-contents (extract-contents x))))
+                   (match contents
+                     ;; flatten if we have only a single heading
+                     (('ol (li y sections ...))
+                      sections)
+                     (else contents))))
+           (div (@ (id . "main"))
+                ,@(map (lambda (x)
+                         (if (and (pair? x) (eq? 'title (car x)))
+                             (cons 'h1 (cdr x))
+                             x))
+                       x)
+                (div (@ (id . "footer"))))))))
 
 (define (fix-paragraphs x)
   (let lp ((ls x) (p '()) (res '()))
@@ -629,7 +749,7 @@ div#footer {padding-bottom: 50px}
   (let ((sections '(section subsection subsubsection subsubsubsection)))
     (lambda (x)
       (cond ((memq x sections) => length)
-            ((memq x '(procedure macro)) (section-number 'subsection))
+            ((memq x '(procedure macro)) (section-number 'subsubsection))
             (else 0)))))
 
 (define (section>=? x n)
@@ -700,15 +820,16 @@ div#footer {padding-bottom: 50px}
       (let lp ((ls orig-ls) (rev-pre '()))
         (cond
          ((or (null? ls)
-              (section>=? (car ls) (section-number 'subsection)))
+              (section>=? (car ls) (section-number 'subsubsection)))
           `(,@(reverse rev-pre)
             ,@(if (and (pair? ls)
                        (section-describes?
-                        (extract-sxml '(subsection procedure macro)
-                                      (car ls))
+                        (extract-sxml
+                         '(subsubsection procedure macro)
+                         (car ls))
                         name))
                   '()
-                  `((subsection
+                  `((subsubsection
                      tag: ,(write-to-string name)
                      (rawcode
                       ,@(if (and (pair? (car sig)) (eq? 'const: (caar sig)))

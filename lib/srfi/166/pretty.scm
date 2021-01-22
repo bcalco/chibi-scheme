@@ -18,11 +18,21 @@
 (define (make-space n) (make-string n #\space))
 (define (make-nl-space n) (string-append "\n" (make-string n #\space)))
 
+(define (call-with-output-string proc)
+  (let ((out (open-output-string)))
+    (proc out)
+    (let ((res (get-output-string out)))
+      (close-output-port out)
+      res)))
+
 (define (joined/shares fmt ls shares . o)
   (let ((sep (displayed (if (pair? o) (car o) " "))))
     (fn ()
-      (if (null? ls)
-          nothing
+      (cond
+       ((null? ls)
+        nothing)
+       ((pair? ls)
+        (fn ()
           (let lp ((ls ls))
             (each
              (fmt (car ls))
@@ -35,18 +45,19 @@
                                            each
                                            (fn () (lp rest))
                                            sep))
-                (else (each sep ". " (fmt rest)))))))))))
+                (else (each sep ". " (fmt rest)))))))))
+       (else (fmt ls))))))
 
 (define (string-find/index str pred i)
   (string-cursor->index
    str
-   (string-find str pred (string-index->cursor str i))))
+   (string-index str pred (string-index->cursor str i))))
 
 (define (write-to-string x)
   (call-with-output-string (lambda (out) (write x out))))
 
 (define (try-fitted2 proc fail)
-  (fn (width (orig-output output))
+  (fn (width string-width (orig-output output))
     (let ((out (open-output-string)))
       (call-with-current-continuation
        (lambda (abort)
@@ -57,7 +68,7 @@
            (fn (col)
              (let lp ((i 0) (col col))
                (let ((nli (string-find/index str #\newline i))
-                     (len (string-length str)))
+                     (len (string-width str)))
                  (if (< nli len)
                      (if (> (+ (- nli i) col) width)
                          (abort fail)
@@ -81,33 +92,40 @@
         proc
         (try-fitted2 proc (lp (car ls) (cdr ls))))))
 
-(define (fits-in-width width proc)
+(define (fits-in-width width proc set-failed!)
   (call-with-current-continuation
    (lambda (abort)
-     (show
-      #f
-      (fn ((orig-output output))
-        (define (output* str)
-          (each (orig-output str)
-                (fn (col)
-                  (if (>= col width)
-                      (abort #f)
-                      nothing))))
-        (with ((output output*))
-          proc))))))
+     (fn ((orig-output output))
+       (define (output* str)
+         (each (orig-output str)
+               (fn (col)
+                 (if (>= col width)
+                     (begin (set-failed! #t) (abort #f))
+                     nothing))))
+       (with ((output output*))
+         proc)))))
 
-(define (fits-in-columns width ls writer)
+(define (fits-in-columns width ls writer set-result!)
   (let ((max-w (quotient width 2)))
-    (let lp ((ls ls) (res '()) (widest 0))
-      (cond
-       ((pair? ls)
-        (let ((str (fits-in-width max-w (writer (car ls)))))
-          (and str
-               (lp (cdr ls)
-                   (cons str res)
-                   (max (string-length str) widest)))))
-       ((null? ls) (cons widest (reverse res)))
-       (else #f)))))
+    (fn (string-width)
+      (let lp ((ls ls) (res '()) (widest 0))
+        (cond
+         ((pair? ls)
+          (let ((failed? #f))
+            (call-with-output
+             (fits-in-width max-w
+                            (writer (car ls))
+                            (lambda (x) (set! failed? x)))
+             (lambda (str)
+               (if failed?
+                   (begin
+                     (set-result! #f)
+                     nothing)
+                   (lp (cdr ls)
+                       (cons str res)
+                       (max (string-width str) widest)))))))
+         ((null? ls) (set-result! (cons widest (reverse res))) nothing)
+         (else (set-result! #f) nothing))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; style
@@ -117,13 +135,13 @@
     (unquote . ",") (unquote-splicing . ",@")
     ))
 
-(define (pp-let ls pp shares)
+(define (pp-let ls pp shares color?)
   (if (and (pair? (cdr ls)) (symbol? (cadr ls)))
-      (pp-with-indent 2 ls pp shares)
-      (pp-with-indent 1 ls pp shares)))
+      (pp-with-indent 2 ls pp shares color?)
+      (pp-with-indent 1 ls pp shares color?)))
 
 (define indent-rules
-  `((lambda . 1) (define . 1)
+  `((lambda . 1) (define . 1) (define-syntax . 1)
     (let . ,pp-let) (loop . ,pp-let)
     (let* . 1) (letrec . 1) (letrec* . 1) (and-let* . 1) (let1 . 2)
     (let-values . 1) (let*-values . 1) (receive . 2) (parameterize . 1)
@@ -142,6 +160,11 @@
 (define indent-suffix-rules
   `(("-case" . 1))
   )
+
+(define pp-macros
+  (append
+   (map car indent-rules)
+   '(quote quasiquote unquote unquote-splicing set! cond-expand cond )))
 
 (define (pp-indentation form)
   (let ((indent
@@ -163,35 +186,35 @@
   (let ((orig-count (cdr shares)))
     (fn ()
       (let ((new-count (cdr shares)))
-        (cond
-         ((> new-count orig-count)
+        (when (> new-count orig-count)
           (hash-table-walk
            (car shares)
            (lambda (k v)
              (if (and (cdr v) (>= (car v) orig-count))
                  (set-cdr! v #f))))
-          (set-cdr! shares orig-count)))
+          (set-cdr! shares orig-count))
         proc))))
 
-(define (pp-with-indent indent-rule ls pp shares)
+(define (pp-with-indent indent-rule ls pp shares color?)
   (fn ((col1 col))
     (each
      "("
-     (pp (car ls))
+     ((if (and color? (memq (car ls) pp-macros)) as-blue displayed)
+      (pp (car ls)))
      (fn ((col2 col) width string-width)
        (let ((fixed (take* (cdr ls) (or indent-rule 1)))
              (tail (drop* (cdr ls) (or indent-rule 1)))
              (default
                (let ((sep (make-nl-space (+ col1 1))))
-                 (each sep (joined/shares pp (cdr ls) shares sep))))
+                 (fn () (each sep (joined/shares pp (cdr ls) shares sep)))))
              ;; reset in case we don't fit on the first line
              (reset-shares (with-reset-shares shares nothing)))
          (call-with-output
           (trimmed/lazy (- width col2)
-                        (each " "
+                        (each (if (or (null? fixed) (pair? fixed)) " " " . ")
                               (joined/shares
-                               (lambda (x) (pp-flat x pp shares)) fixed shares " "))
-                        )
+                               (lambda (x) (pp-flat x pp shares color?))
+                               fixed shares " ")))
           (lambda (first-line)
             (cond
              ((< (+ col2 (string-width first-line)) width)
@@ -223,11 +246,11 @@
               (each reset-shares default)))))))
      ")")))
 
-(define (pp-app ls pp shares)
+(define (pp-app ls pp shares color?)
   (let ((indent-rule (pp-indentation ls)))
     (if (procedure? indent-rule)
-        (indent-rule ls pp shares)
-        (pp-with-indent indent-rule ls pp shares))))
+        (indent-rule ls pp shares color?)
+        (pp-with-indent indent-rule ls pp shares color?))))
 
 ;; the elements may be shared, just checking the top level list
 ;; structure
@@ -251,34 +274,44 @@
    (fn (col width string-width)
      (let ((avail (- width col)))
        (cond
-        ((and (pair? (cdr ls)) (pair? (cddr ls)) (pair? (cdr (cddr ls)))
-              (fits-in-columns width ls (lambda (x) (pp-flat x pp shares))))
-         => (lambda (ls)
-              ;; at least four elements which can be broken into columns
-              (let* ((prefix (make-nl-space col))
-                     (widest (+ 1 (car ls)))
-                     (columns (quotient width widest))) ; always >= 2
-                (let lp ((ls (cdr ls)) (i 1))
-                  (cond
-                   ((null? ls)
-                    nothing)
-                   ((null? (cdr ls))
-                    (displayed (car ls)))
-                   ((>= i columns)
-                    (each (car ls)
-                          prefix
-                          (fn () (lp (cdr ls) 1))))
-                   (else
-                    (let ((pad (- widest (string-width (car ls)))))
-                      (each (car ls)
-                            (make-space pad)
-                            (lp (cdr ls) (+ i 1))))))))))
+        ((and (pair? (cdr ls)) (pair? (cddr ls)) (pair? (cdr (cddr ls))))
+         (let ((out (open-output-string))
+               (result #f))
+           (call-with-output
+            (fits-in-columns width ls (lambda (x) (pp-flat x pp shares #f))
+                             (lambda (res) (set! result res)))
+            (lambda (str)
+              (fn ()
+                (if (not result)
+                    ;; no room, print one per line
+                    (joined/shares pp ls shares (make-nl-space col))
+                    ;; at least four elements which can be broken into columns
+                    (let* ((prefix (make-nl-space col))
+                           (widest (+ 1 (car result)))
+                           (columns (quotient width widest))) ; always >= 2
+                      (let lp ((ls (cdr result)) (i 1))
+                        (cond
+                         ((null? ls)
+                          nothing)
+                         ((null? (cdr ls))
+                          (displayed (car ls)))
+                         ((>= i columns)
+                          (each (car ls)
+                                prefix
+                                (fn () (lp (cdr ls) 1))))
+                         (else
+                          (let ((pad (- widest (string-width (car ls)))))
+                            (each (car ls)
+                                  (make-space pad)
+                                  (lp (cdr ls) (+ i 1))))))))))))))
         (else
          ;; no room, print one per line
          (joined/shares pp ls shares (make-nl-space col))))))
    ")"))
 
-(define (pp-flat x pp shares)
+(define (pp-flat x pp shares color?)
+  (define (ppf x)
+    (pp-flat x pp shares color?))
   (cond
    ((pair? x)
     (cond
@@ -290,20 +323,33 @@
                   (cadr x)
                   shares
                   each
-                  (pp-flat (cadr x) pp shares)))))
+                  (pp-flat (cadr x) pp shares color?)))))
      (else
-      (each "("
-            (joined/shares (lambda (x) (pp-flat x pp shares)) x shares " ")
-            ")"))))
+      (fn ()
+        (each "("
+              ((if (and color? (memq (car x) pp-macros)) as-blue displayed)
+               (pp (car x)))
+              (if (null? (cdr x))
+                  nothing
+                  (call-with-shared-ref/cdr
+                   (cdr x)
+                   shares
+                   each
+                   (cond
+                    ((pair? (cdr x))
+                     (each "" (joined/shares ppf (cdr x) shares " ")))
+                    (else
+                     (each ". " (joined/shares ppf (cdr x) shares " "))))
+                   " "))
+              ")")))))
    ((vector? x)
     (each "#("
-          (joined/shares
-           (lambda (x) (pp-flat x pp shares)) (vector->list x) shares " ")
+          (joined/shares ppf (vector->list x) shares " ")
           ")"))
    (else
     (pp x))))
 
-(define (pp-pair ls pp shares)
+(define (pp-pair ls pp shares color?)
   (cond
    ;; one element list, no lines to break
    ((null? (cdr ls))
@@ -314,21 +360,22 @@
     => (lambda (abbrev)
          (each (cdr abbrev) (pp (cadr ls)))))
    (else
-    (try-fitted
-     (fn () (pp-flat ls pp shares))
-     (with-reset-shares
-      shares
-      (fn ()
-        (if (and (non-app? ls)
-                 (proper-non-shared-list? ls shares))
-            (pp-data-list ls pp shares)
-            (pp-app ls pp shares))))))))
+    (let ((reset-shares (with-reset-shares shares nothing)))
+      (try-fitted
+       (pp-flat ls pp shares color?)
+       (each
+        reset-shares
+        (fn ()
+          (if (and (non-app? ls)
+                   (proper-non-shared-list? ls shares))
+              (pp-data-list ls pp shares)
+              (pp-app ls pp shares color?)))))))))
 
 (define (pp-vector vec pp shares)
   (each "#" (pp-data-list (vector->list vec) pp shares)))
 
 ;; adapted from `write-with-shares'
-(define (pp obj shares)
+(define (pp obj shares color?)
   (fn (radix precision)
     (let ((write-number
            (cond
@@ -346,31 +393,38 @@
          (fn ()
            (cond
             ((pair? obj)
-             (pp-pair obj pp shares))
+             (pp-pair obj pp shares color?))
             ((vector? obj)
              (pp-vector obj pp shares))
             ((number? obj)
              (write-number obj))
+            ((and color? (string? obj))
+             (as-green (write-to-string obj)))
             (else
              (displayed (write-to-string obj))))))))))
 
 (define (pretty obj)
   (fn ()
     (call-with-output
-     (each (pp obj (extract-shared-objects obj #t))
+     (each (pp obj (extract-shared-objects obj #t) #f)
            fl)
      displayed)))
 
 (define (pretty-shared obj)
   (fn ()
     (call-with-output
-     (each (pp obj (extract-shared-objects obj #f))
+     (each (pp obj (extract-shared-objects obj #f) #f)
            fl)
      displayed)))
 
 (define (pretty-simply obj)
   (fn ()
-    (each (pp obj (extract-shared-objects #f #f))
+    (each (pp obj (extract-shared-objects #f #f) #f)
           fl)))
 
-(define pretty-color pretty)
+(define (pretty-with-color obj)
+  (fn ()
+    (call-with-output
+     (each (pp obj (extract-shared-objects obj #t) #t)
+           fl)
+     displayed)))

@@ -1,5 +1,5 @@
 /*  bignum.h -- header for bignum utilities                   */
-/*  Copyright (c) 2009-2018 Alex Shinn.  All rights reserved. */
+/*  Copyright (c) 2009-2020 Alex Shinn.  All rights reserved. */
 /*  BSD-style license: http://synthcode.com/license.txt       */
 
 #ifndef SEXP_BIGNUM_H
@@ -31,10 +31,14 @@ typedef long long sexp_lsint_t;
 
 #if !SEXP_USE_CUSTOM_LONG_LONGS
 
+#define sexp_lsint_fits_sint(x) ((sexp_sint_t)x == x)
+#define sexp_luint_fits_uint(x) ((sexp_uint_t)x == x)
 #define lsint_from_sint(v) ((sexp_lsint_t)v)
 #define luint_from_uint(v) ((sexp_luint_t)v)
 #define lsint_to_sint(v) ((sexp_sint_t)v)
 #define luint_to_uint(v) ((sexp_uint_t)v)
+#define lsint_to_sint_hi(v) ((sexp_sint_t) ((v) >> (8*sizeof(sexp_sint_t))))
+#define luint_to_uint_hi(v) ((sexp_uint_t) ((v) >> (8*sizeof(sexp_uint_t))))
 #define lsint_negate(v) (-((sexp_lsint_t)v))
 #define luint_eq(a, b) (((sexp_luint_t)a)==((sexp_luint_t)b))
 #define luint_lt(a, b) (((sexp_luint_t)a)<((sexp_luint_t)b))
@@ -53,6 +57,17 @@ typedef long long sexp_lsint_t;
 #define lsint_is_fixnum(x) ((SEXP_MIN_FIXNUM <= ((sexp_lsint_t)x)) && (((sexp_lsint_t)x) <= SEXP_MAX_FIXNUM))
 
 #else
+
+static inline int lsint_lt_0(sexp_lsint_t a) {
+  return a.hi < 0;
+}
+
+static inline int sexp_lsint_fits_sint(sexp_lsint_t x) {
+  return x.hi == (((int64_t)x.lo)>>63) && ((sexp_sint_t)x.lo == x.lo);
+}
+static inline int sexp_luint_fits_uint(sexp_luint_t x) {
+  return x.hi == 0 && ((sexp_uint_t)x.lo == x.lo);
+}
 
 static inline sexp_luint_t luint_from_lsint(sexp_lsint_t v) {
   sexp_luint_t result;
@@ -83,11 +98,27 @@ static inline sexp_luint_t luint_from_uint(sexp_uint_t v) {
 }
 
 static inline sexp_sint_t lsint_to_sint(sexp_lsint_t v) {
-  return v.lo;
+  return lsint_lt_0(v) ? -v.lo : v.lo;
 }
 
 static inline sexp_uint_t luint_to_uint(sexp_luint_t v) {
   return v.lo;
+}
+
+static inline sexp_sint_t lsint_to_sint_hi(sexp_lsint_t v) {
+#if SEXP_64_BIT
+  return v.hi;
+#else
+  return v.lo >> 32;
+#endif
+}
+
+static inline sexp_uint_t luint_to_uint_hi(sexp_luint_t v) {
+#if SEXP_64_BIT
+  return v.hi;
+#else
+  return v.lo >> 32;
+#endif
 }
 
 static inline sexp_lsint_t lsint_negate(sexp_lsint_t v) {
@@ -115,7 +146,7 @@ static inline sexp_lsint_t lsint_negate(sexp_lsint_t v) {
 
   uint64_t sumHiHi = aHiHi + carry;
   uint64_t resultHiHi = sumHiHi & 0xFFFFFFFF;
-  //carry = sumHiHi >> 32;
+  /* carry = sumHiHi >> 32; */
 
   sexp_lsint_t result;
   result.hi = (resultHiHi << 32) | resultHiLo;
@@ -134,10 +165,6 @@ static inline int luint_lt(sexp_luint_t a, sexp_luint_t b) {
     return 0;
   else
     return a.lo < b.lo;
-}
-
-static inline int lsint_lt_0(sexp_lsint_t a) {
-  return a.hi < 0;
 }
 
 static inline sexp_luint_t luint_shl(sexp_luint_t v, size_t shift) {
@@ -193,7 +220,7 @@ static inline sexp_luint_t luint_add(sexp_luint_t a, sexp_luint_t b) {
 
   uint64_t sumHiHi = (aHiHi + bHiHi) + carry;
   uint64_t resultHiHi = sumHiHi & 0xFFFFFFFF;
-  //carry = sumHiHi >> 32;
+  /* carry = sumHiHi >> 32; */
 
   sexp_luint_t result;
   result.hi = (resultHiHi << 32) | resultHiLo;
@@ -224,7 +251,7 @@ static inline sexp_luint_t luint_add_uint(sexp_luint_t a, sexp_uint_t b) {
 
   uint64_t sumHiHi = aHiHi + carry;
   uint64_t resultHiHi = sumHiHi & 0xFFFFFFFF;
-  //carry = sumHiHi >> 32;
+  /* carry = sumHiHi >> 32; */
 
   sexp_luint_t result;
   result.hi = (resultHiHi << 32) | resultHiLo;
@@ -369,7 +396,7 @@ SEXP_API sexp_uint_t sexp_bignum_hi (sexp a);
 SEXP_API sexp sexp_fixnum_to_bignum (sexp ctx, sexp a);
 SEXP_API double sexp_bignum_to_double (sexp a);
 SEXP_API sexp sexp_double_to_bignum (sexp ctx, double f);
-SEXP_API double sexp_to_double (sexp x);
+SEXP_API double sexp_to_double (sexp ctx, sexp x);
 SEXP_API sexp sexp_bignum_fxadd (sexp ctx, sexp a, sexp_uint_t b);
 SEXP_API sexp sexp_bignum_fxsub (sexp ctx, sexp a, sexp_uint_t b);
 SEXP_API sexp sexp_bignum_fxmul (sexp ctx, sexp d, sexp a, sexp_uint_t b, int offset);
@@ -389,7 +416,7 @@ SEXP_API sexp sexp_remainder (sexp ctx, sexp a, sexp b);
 #if SEXP_USE_RATIOS
 SEXP_API sexp sexp_double_to_ratio (sexp ctx, double f);
 SEXP_API sexp sexp_double_to_ratio_2 (sexp ctx, double f);
-SEXP_API double sexp_ratio_to_double (sexp rat);
+SEXP_API double sexp_ratio_to_double (sexp ctx, sexp rat);
 SEXP_API sexp sexp_make_ratio (sexp ctx, sexp num, sexp den);
 SEXP_API sexp sexp_ratio_normalize (sexp ctx, sexp rat, sexp in);
 SEXP_API sexp sexp_ratio_round (sexp ctx, sexp a);

@@ -7,6 +7,8 @@
 
 #include "chibi/sexp.h"
 
+#if SEXP_USE_IMAGE_LOADING
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,13 +96,10 @@ SEXP_API sexp sexp_load_image (const char* filename, off_t offset, sexp_uint_t h
 */
 SEXP_API char* sexp_load_image_err();
 
-
-/* Debugging tool.  Prints a summary of the heap structure to stdout.
- */
-SEXP_API void sexp_gc_heap_stats_print(sexp ctx);
-
 #ifdef __cplusplus
 }
 #endif
+
+#endif  /* SEXP_USE_IMAGE_LOADING */
 
 #endif  /* ! SEXP_GC_HEAP_H */

@@ -206,7 +206,7 @@ sexp sexp_env_exports_op (sexp ctx, sexp self, sexp_sint_t n, sexp env) {
   res = SEXP_NULL;
 #if SEXP_USE_RENAME_BINDINGS
   for (ls=sexp_env_renames(env); sexp_pairp(ls); ls=sexp_env_next_cell(ls))
-    sexp_push(ctx, res, sexp_cadr(ls));
+    sexp_push(ctx, res, sexp_car(ls));
 #endif
   for (ls=sexp_env_bindings(env); sexp_pairp(ls); ls=sexp_env_next_cell(ls))
     if (sexp_env_value(ls) != SEXP_UNDEF)
@@ -221,7 +221,7 @@ sexp sexp_extend_env (sexp ctx, sexp env, sexp vars, sexp value) {
   e = sexp_alloc_type(ctx, env, SEXP_ENV);
   sexp_env_parent(e) = env;
   sexp_env_bindings(e) = SEXP_NULL;
-#if SEXP_USE_RENAME_BINDINGS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RENAME_BINDINGS
   sexp_env_renames(e) = SEXP_NULL;
 #endif
   for ( ; sexp_pairp(vars); vars = sexp_cdr(vars))
@@ -241,7 +241,7 @@ sexp sexp_extend_synclo_env (sexp ctx, sexp env) {
       e2 = e2 ? (sexp_env_parent(e2) = sexp_alloc_type(ctx, env, SEXP_ENV)) : e;
       sexp_env_bindings(e2) = sexp_env_bindings(e1);
       sexp_env_syntactic_p(e2) = 1;
-#if SEXP_USE_RENAME_BINDINGS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RENAME_BINDINGS
       sexp_env_renames(e2) = sexp_env_renames(e1);
 #endif
     }
@@ -1011,7 +1011,7 @@ static sexp analyze_let_syntax_aux (sexp ctx, sexp x, int recp, int depth) {
     sexp_env_syntactic_p(env) = 1;
     sexp_env_parent(env) = sexp_context_env(ctx);
     sexp_env_bindings(env) = SEXP_NULL;
-#if SEXP_USE_RENAME_BINDINGS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RENAME_BINDINGS
     sexp_env_renames(env) = SEXP_NULL;
 #endif
     ctx2 = sexp_make_child_context(ctx, sexp_context_lambda(ctx));
@@ -1486,10 +1486,10 @@ sexp sexp_register_optimization (sexp ctx, sexp self, sexp_sint_t n, sexp f, sex
 #endif
 
 #if SEXP_USE_RATIOS
-#define maybe_convert_ratio(z)                          \
-  else if (sexp_ratiop(z)) d = sexp_ratio_to_double(z);
+#define maybe_convert_ratio(ctx, z)                             \
+  else if (sexp_ratiop(z)) d = sexp_ratio_to_double(ctx, z);
 #else
-#define maybe_convert_ratio(z)
+#define maybe_convert_ratio(ctx, z)
 #endif
 
 #if SEXP_USE_COMPLEX
@@ -1507,7 +1507,7 @@ sexp sexp_register_optimization (sexp ctx, sexp self, sexp_sint_t n, sexp f, sex
       d = sexp_flonum_value(z);                                         \
     else if (sexp_fixnump(z))                                           \
       d = (double)sexp_unbox_fixnum(z);                                 \
-    maybe_convert_ratio(z)                                              \
+    maybe_convert_ratio(ctx, z)                                         \
     maybe_convert_bignum(z)                                             \
     maybe_convert_complex(z, f)                                         \
     else                                                                \
@@ -1523,7 +1523,7 @@ sexp sexp_register_optimization (sexp ctx, sexp self, sexp_sint_t n, sexp f, sex
       d = sexp_flonum_value(z);                                         \
     else if (sexp_fixnump(z))                                           \
       d = (double)sexp_unbox_fixnum(z);                                 \
-    maybe_convert_ratio(z)                                              \
+    maybe_convert_ratio(ctx, z)                                         \
     maybe_convert_bignum(z)                                             \
     maybe_convert_complex(z, f)                                         \
     else                                                                \
@@ -1586,7 +1586,7 @@ sexp sexp_log (sexp ctx, sexp self, sexp_sint_t n, sexp z) {
     d = sexp_flonum_value(z);
   else if (sexp_fixnump(z))
     d = (double)sexp_unbox_fixnum(z);
-  maybe_convert_ratio(z)
+  maybe_convert_ratio(ctx, z)
   maybe_convert_bignum(z)
   else
     return sexp_type_exception(ctx, self, SEXP_NUMBER, z);
@@ -1613,7 +1613,7 @@ sexp sexp_inexact_sqrt (sexp ctx, sexp self, sexp_sint_t n, sexp z) {
     d = sexp_flonum_value(z);
   else if (sexp_fixnump(z))
     d = (double)sexp_unbox_fixnum(z);
-  maybe_convert_ratio(z)        /* XXXX add ratio sqrt */
+  maybe_convert_ratio(ctx, z)        /* XXXX add ratio sqrt */
   maybe_convert_complex(z, sexp_complex_sqrt)
   else
     return sexp_type_exception(ctx, self, SEXP_NUMBER, z);
@@ -1662,14 +1662,30 @@ sexp sexp_exact_sqrt (sexp ctx, sexp self, sexp_sint_t n, sexp z) {
 #endif
 
 sexp sexp_sqrt (sexp ctx, sexp self, sexp_sint_t n, sexp z) {
-#if SEXP_USE_BIGNUMS
+#if SEXP_USE_BIGNUMS || SEXP_USE_RATIOS
   sexp_gc_var2(res, rem);
+#endif
+#if SEXP_USE_BIGNUMS
   if (sexp_bignump(z)) {
     sexp_gc_preserve2(ctx, res, rem);
     res = sexp_bignum_sqrt(ctx, z, &rem);
     rem = sexp_bignum_normalize(rem);
     if (rem != SEXP_ZERO)
       res = sexp_make_flonum(ctx, sexp_fixnump(res) ? sexp_unbox_fixnum(res) : sexp_bignum_to_double(res));
+    sexp_gc_release2(ctx);
+    return res;
+  }
+#endif
+#if SEXP_USE_RATIOS
+  if (sexp_ratiop(z)) {
+    sexp_gc_preserve2(ctx, res, rem);
+    res = sexp_sqrt(ctx, self, n, sexp_ratio_numerator(z));
+    rem = sexp_sqrt(ctx, self, n, sexp_ratio_denominator(z));
+    if (sexp_exactp(res) && sexp_exactp(rem)) {
+      res = sexp_make_ratio(ctx, res, rem);
+    } else {
+      res = sexp_inexact_sqrt(ctx, self, n, z);
+    }
     sexp_gc_release2(ctx);
     return res;
   }
@@ -1730,7 +1746,7 @@ sexp sexp_expt_op (sexp ctx, sexp self, sexp_sint_t n, sexp x, sexp e) {
     if (sexp_fixnump(e)) {
       return sexp_generic_expt(ctx, x, sexp_unbox_fixnum(e));
     } else {
-      x1 = sexp_ratio_to_double(x);
+      x1 = sexp_ratio_to_double(ctx, x);
     }
   }
 #endif
@@ -1742,7 +1758,7 @@ sexp sexp_expt_op (sexp ctx, sexp self, sexp_sint_t n, sexp x, sexp e) {
     e1 = sexp_flonum_value(e);
 #if SEXP_USE_RATIOS
   else if (sexp_ratiop(e))
-    e1 = sexp_ratio_to_double(e);
+    e1 = sexp_ratio_to_double(ctx, e);
 #endif
   else
     return sexp_type_exception(ctx, self, SEXP_FIXNUM, e);
@@ -1804,7 +1820,7 @@ sexp sexp_exact_to_inexact (sexp ctx, sexp self, sexp_sint_t n, sexp i) {
 #endif
 #if SEXP_USE_RATIOS
   else if (sexp_ratiop(i))
-    res = sexp_make_flonum(ctx, sexp_ratio_to_double(i));
+    res = sexp_make_flonum(ctx, sexp_ratio_to_double(ctx, i));
 #endif
 #if SEXP_USE_COMPLEX
   else if (sexp_complexp(i)) {
@@ -2182,7 +2198,7 @@ sexp sexp_make_env_op (sexp ctx, sexp self, sexp_sint_t n) {
   sexp_env_lambda(e) = NULL;
   sexp_env_parent(e) = NULL;
   sexp_env_bindings(e) = SEXP_NULL;
-#if SEXP_USE_RENAME_BINDINGS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RENAME_BINDINGS
   sexp_env_renames(e) = SEXP_NULL;
 #endif
   return e;
@@ -2201,6 +2217,8 @@ sexp sexp_make_null_env_op (sexp ctx, sexp self, sexp_sint_t n, sexp version) {
   sexp_gc_release2(ctx);
   return e;
 }
+
+extern struct sexp_opcode_struct* sexp_primitive_opcodes;  /* from opcodes.c */
 
 sexp sexp_make_primitive_env_op (sexp ctx, sexp self, sexp_sint_t n, sexp version) {
   int i;
@@ -2423,9 +2441,9 @@ sexp sexp_load_standard_env (sexp ctx, sexp e, sexp version) {
     = sexp_env_ref(ctx, e, sym=sexp_intern(ctx, "current-exception-handler", -1), SEXP_FALSE);
   /* load init-7.scm */
   len = strlen(sexp_init_file);
-  strncpy(init_file, sexp_init_file, len);
+  strncpy(init_file, sexp_init_file, len+1);
   init_file[len] = (char)sexp_unbox_fixnum(version) + '0';
-  strncpy(init_file + len + 1, sexp_init_file_suffix, strlen(sexp_init_file_suffix));
+  strncpy(init_file + len + 1, sexp_init_file_suffix, strlen(sexp_init_file_suffix)+1);
   init_file[len + 1 + strlen(sexp_init_file_suffix)] = 0;
   tmp = sexp_load_module_file(ctx, init_file, e);
   sexp_set_parameter(ctx, e, sexp_global(ctx, SEXP_G_INTERACTION_ENV_SYMBOL), e);

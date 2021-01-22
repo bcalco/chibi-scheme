@@ -17,20 +17,30 @@
    ;; computations
    fn with with! forked call-with-output
    ;; state variables
-   port row col width output writer string-width pad-char ellipsis
+   make-state-variable
+   port row col width output writer pad-char ellipsis
+   string-width substring/width substring/preserve
    radix precision decimal-sep decimal-align sign-rule
-   comma-sep comma-rule word-separator?
+   comma-sep comma-rule word-separator? ambiguous-is-wide?
+   pretty-environment
    ;; pretty
-   pretty pretty-shared pretty-simply pretty-color
+   pretty pretty-shared pretty-simply pretty-with-color
    ;; columnar
    columnar tabular wrapped wrapped/list wrapped/char
-   justified from-file line-numbers show-columns
+   justified from-file line-numbers
    ;; unicode
-   as-unicode unicode-terminal-width
+   terminal-aware
+   string-terminal-width string-terminal-width/wide
+   substring-terminal-width substring-terminal-width/wide
+   substring-terminal-width substring-terminal-width/wide
+   substring-terminal-preserve
    upcased downcased
    ;; color
    as-red as-blue as-green as-cyan as-yellow
    as-magenta as-white as-black
-   as-bold as-underline
+   as-bold as-italic as-underline
    as-color as-true-color
+   on-red on-blue on-green on-cyan on-yellow
+   on-magenta on-white on-black
+   on-color on-true-color
    ))

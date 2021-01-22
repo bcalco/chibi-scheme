@@ -2,18 +2,19 @@
 (define-library (srfi 166 base)
   (import (scheme base)
           (scheme char)
-          (scheme write)
           (scheme complex)
           (scheme inexact)
+          (scheme repl)
+          (scheme write)
           (srfi 1)
           (srfi 69)
-          (chibi show shared)
-          (chibi string)
+          (srfi 130)
           (rename (srfi 165)
                   (computation-each sequence)
                   (computation-with! with!)
                   (computation-forked forked)
-                  ))
+                  (make-computation-environment-variable make-state-variable))
+          (chibi show shared))
   (cond-expand
    (chibi
     (import (only (chibi) let-optionals*)))
@@ -42,14 +43,16 @@
    joined/range padded padded/right padded/both
    trimmed trimmed/right trimmed/both trimmed/lazy
    fitted fitted/right fitted/both output-default
-   upcased downcased
    ;; computations
    fn with with! forked call-with-output
    ;; state variables
-   port row col width output writer string-width pad-char ellipsis
+   make-state-variable
+   port row col width output writer pad-char ellipsis
+   string-width substring/width substring/preserve
    radix precision decimal-sep decimal-align sign-rule
-   comma-sep comma-rule word-separator?
+   comma-sep comma-rule word-separator? ambiguous-is-wide?
+   pretty-environment
    )
   (include "base.scm")
-  (include "../../chibi/show/write.scm")
-  (include "../../chibi/show/show.scm"))
+  (include "write.scm")
+  (include "show.scm"))

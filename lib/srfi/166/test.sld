@@ -261,7 +261,8 @@
 
       (test "608" (show #f (numeric/si 608)))
       (test "608 B" (show #f (numeric/si 608 1000 " ") "B"))
-      (test "3.9Ki" (show #f (numeric/si 3986)))
+      (test "4k" (show #f (numeric/si 3986)))
+      (test "3.9Ki" (show #f (numeric/si 3986 1024)))
       (test "4kB" (show #f (numeric/si 3986 1000) "B"))
       (test "1.2Mm" (show #f (numeric/si 1.23e6 1000) "m"))
       (test "123km" (show #f (numeric/si 1.23e5 1000) "m"))
@@ -280,6 +281,8 @@
       (test "1.2 µm" (show #f (numeric/si 1.23e-6 1000 " ") "m"))
 
       (test "1,234,567" (show #f (numeric/comma 1234567)))
+      (test "1,234,567" (show #f (numeric/comma 1234567 3)))
+      (test "123,4567" (show #f (numeric/comma 1234567 4)))
 
       (test "1.23" (show #f (numeric/fitted 4 1.2345 10 2)))
       (test "1.00" (show #f (numeric/fitted 4 1 10 2)))
@@ -301,8 +304,14 @@
       (test "abc" (show #f (trimmed/right 3 "abc")))
       (test "ab" (show #f (trimmed/right 3 "ab")))
       (test "a" (show #f (trimmed/right 3 "a")))
+      (test "abcde" (show #f (trimmed/right 5 "abcdef")))
+      (test "abcde" (show #f (trimmed 5 "abcde")))
       (test "cde" (show #f (trimmed 3 "abcde")))
+      (test "bcdef" (show #f (trimmed 5 "abcdef")))
       (test "bcd" (show #f (trimmed/both 3 "abcde")))
+      (test "abcd" (show #f (trimmed/both 4 "abcde")))
+      (test "abcde" (show #f (trimmed/both 5 "abcdef")))
+      (test "bcde" (show #f (trimmed/both 4 "abcdef")))
       (test "bcdef" (show #f (trimmed/both 5 "abcdefgh")))
       (test "abc" (show #f (trimmed/lazy 3 "abcde")))
       (test "abc" (show #f (trimmed/lazy 3 "abc\nde")))
@@ -496,6 +505,10 @@
  #(16 17) #(18 19))\n")
 
       (test-pretty
+       "#(#(0 1)   #(2 3)   #(4 5)   #(6 7)   #(8 9)   #(10 11) #(12 13) #(14 15)
+  #(16 17) #(18 19))\n")
+
+      (test-pretty
        "(define (fold kons knil ls)
   (define (loop ls acc)
     (if (null? ls) acc (loop (cdr ls) (kons (car ls) acc))))
@@ -570,40 +583,43 @@
 
       ;; columns
 
-      (test "abc\ndef\n"
+      '(test "abc\ndef\n"
           (show #f (show-columns (list displayed "abc\ndef\n"))))
-      (test "abc123\ndef456\n"
+      '(test "abc123\ndef456\n"
           (show #f (show-columns (list displayed "abc\ndef\n")
                                  (list displayed "123\n456\n"))))
-      (test "abc123\ndef456\n"
+      '(test "abc123\ndef456\n"
           (show #f (show-columns (list displayed "abc\ndef\n")
                                  (list displayed "123\n456"))))
-      (test "abc123\ndef456\n"
+      '(test "abc123\ndef456\n"
           (show #f (show-columns (list displayed "abc\ndef")
                                  (list displayed "123\n456\n"))))
-      (test "abc123\ndef456\nghi789\n"
+      '(test "abc123\ndef456\nghi789\n"
           (show #f (show-columns (list displayed "abc\ndef\nghi\n")
                                  (list displayed "123\n456\n789\n"))))
-      (test "abc123wuv\ndef456xyz\n"
+      '(test "abc123wuv\ndef456xyz\n"
           (show #f (show-columns (list displayed "abc\ndef\n")
                                  (list displayed "123\n456\n")
                                  (list displayed "wuv\nxyz\n"))))
-      (test "abc  123\ndef  456\n"
+      '(test "abc  123\ndef  456\n"
           (show #f (show-columns (list (lambda (x) (padded/right 5 x))
                                        "abc\ndef\n")
                                  (list displayed "123\n456\n"))))
-      (test "ABC  123\nDEF  456\n"
+      '(test "ABC  123\nDEF  456\n"
           (show #f (show-columns (list (lambda (x) (upcased (padded/right 5 x)))
                                        "abc\ndef\n")
                                  (list displayed "123\n456\n"))))
-      (test "ABC  123\nDEF  456\n"
+      '(test "ABC  123\nDEF  456\n"
           (show #f (show-columns (list (lambda (x) (padded/right 5 (upcased x)))
                                        "abc\ndef\n")
                                  (list displayed "123\n456\n"))))
 
-      (test "hello\nworld\n"
+      (test "" (show #f (wrapped "    ")))
+      (test "hello\nworld"
           (show #f (with ((width 8)) (wrapped "hello world"))))
-      (test "\n" (show #f (wrapped "    ")))
+      (test "ｈｅｌｌｏ\nｗｏｒｌｄ"
+          (show #f (with ((width 16))
+                     (terminal-aware (wrapped "ｈｅｌｌｏ　ｗｏｒｌｄ")))))
 
       (test
           "The  quick
@@ -622,8 +638,7 @@ Applies KONS to each element of
 LS and the result of the previous
 application, beginning with KNIL.
 With KONS as CONS and KNIL as '(),
-equivalent to REVERSE.
-"
+equivalent to REVERSE."
           (show #f
                 (with ((width 36))
                   (wrapped "The fundamental list iterator.  Applies KONS to each element of LS and the result of the previous application, beginning with KNIL.  With KONS as CONS and KNIL as '(), equivalent to REVERSE."))))
@@ -645,7 +660,7 @@ equivalent to REVERSE.
                                    (lp (cdr ls)
                                        (kons (car ls) acc)))))))))
 
-      (test
+      '(test
            "(define (fold kons knil ls)          ; The fundamental list iterator.
   (let lp ((ls ls) (acc knil))       ; Applies KONS to each element of
     (if (null? ls)                   ; LS and the result of the previous
@@ -668,6 +683,12 @@ equivalent to REVERSE.
                    (lambda (x) (each " ; " x))
                    (with ((width 36))
                      (wrapped "The fundamental list iterator.  Applies KONS to each element of LS and the result of the previous application, beginning with KNIL.  With KONS as CONS and KNIL as '(), equivalent to REVERSE."))))))
+
+      (test "\n" (show #f (columnar)))      ; degenerate case
+      (test "\n" (show #f (columnar "*")))  ; only infinite columns
+      (test "*\n" (show #f (columnar (each "*"))))
+
+      (test "foo" (show #f (wrapped "foo")))
 
       (test
            "(define (fold kons knil ls)          ; The fundamental list iterator.
@@ -728,19 +749,52 @@ def | 6
                              (each "123\n45\n6\n")))))
 
       ;; color
-      (test "\x1B;[31mred\x1B;[0m" (show #f (as-red "red")))
-      (test "\x1B;[31mred\x1B;[34mblue\x1B;[31mred\x1B;[0m"
+      (test "\x1B;[31mred\x1B;[39m" (show #f (as-red "red")))
+      (test "\x1B;[31mred\x1B;[34mblue\x1B;[31mred\x1B;[39m"
           (show #f (as-red "red" (as-blue "blue") "red")))
-      (test "\x1b;[31m1234567\x1b;[0m col: 7"
-            (show #f (as-unicode (as-red "1234567") (fn (col) (each " col: " col)))))
+      (test "\x1b;[31m1234567\x1b;[39m col: 7"
+            (show #f (terminal-aware (as-red "1234567") (fn (col) (each " col: " col)))))
+      (test "\x1b;[31m\x1b;[4m\x1b;[1mabc\x1b;[22mdef\x1b;[24mghi\x1b;[39m"
+            (show #f (as-red (each (as-underline (as-bold "abc") "def") "ghi"))))
+      (test "\x1b;[44m\x1b;[33mabc\x1b;[39mdef\x1b;[49m"
+            (show #f (on-blue (each (as-yellow "abc") "def"))))
 
       ;; unicode
       (test "〜日本語〜"
           (show #f (with ((pad-char #\〜)) (padded/both 5 "日本語"))))
       (test "日本語"
-            (show #f (as-unicode (with ((pad-char #\〜)) (padded/both 5 "日本語")))))
+          (show #f (terminal-aware (with ((pad-char #\〜)) (padded/both 5 "日本語")))))
+      (test "本語"
+          (show #f (trimmed 2 "日本語")))
+      (test "語"
+          (show #f (terminal-aware (trimmed 2 "日本語"))))
+      (test "日本"
+          (show #f (trimmed/right 2 "日本語")))
+      (test "日"
+          (show #f (terminal-aware (trimmed/right 2 "日本語"))))
+      (test "\x1B;[31m日\x1B;[46m\x1B;[49m\x1B;[39m"
+          (show #f (terminal-aware
+                    (trimmed/right 2 (as-red "日本語" (on-cyan "!!!!"))))))
+      (test "日本語"
+          (show #f (trimmed/right 3 "日本語")))
+      (test "日"
+          (show #f (terminal-aware (trimmed/right 3 "日本語"))))
       (test "日本語 col: 6"
-            (show #f (as-unicode "日本語" (fn (col) (each " col: " col)))))
+          (show #f (terminal-aware "日本語" (fn (col) (each " col: " col)))))
+      (test "日本語ΠΜΕ col: 9"
+          (show #f (terminal-aware "日本語ΠΜΕ" (fn (col) (each " col: " col)))))
+      (test "日本語ΠΜΕ col: 12"
+          (show #f (with ((ambiguous-is-wide? #t))
+                     (terminal-aware "日本語ΠΜΕ"
+                                     (fn (col) (each " col: " col))))))
+      (test "ａｂｃ" (substring-terminal-width "ａｂｃ" 0 6))
+      (test "ａｂ" (substring-terminal-width "ａｂｃ" 0 4))
+      (test "ｂｃ" (substring-terminal-width "ａｂｃ" 2 6))
+      (test "ａｂ" (substring-terminal-width "ａｂｃ" 1 4))
+      (test "ａｂ" (substring-terminal-width "ａｂｃ" 1 5))
+      (test "ｂ" (substring-terminal-width "ａｂｃ" 2 4))
+      (test "" (substring-terminal-width "ａｂｃ" 2 3))
+      (test "ａ" (substring-terminal-width "ａｂｃ" -1 2))
 
       ;; from-file
       ;; for reference, filesystem-test relies on creating files under /tmp

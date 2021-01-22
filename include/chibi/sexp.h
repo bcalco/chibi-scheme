@@ -82,6 +82,12 @@ typedef long long off_t;
 #define exit(x)           exits(TOSTRING(x))
 #define fabsl          fabs
 #define M_LN10         2.30258509299404568402  /* log_e 10 */
+#define FLT_RADIX 2
+#define isfinite(x) !(isNaN(x) || isInf(x,0))
+typedef u32int uint32_t;
+typedef s32int int32_t;
+typedef u64int uint64_t;
+typedef s64int int64_t;
 #else
 #include <stddef.h>
 #include <stdlib.h>
@@ -163,13 +169,13 @@ enum sexp_types {
   SEXP_VECTOR,
   SEXP_FLONUM,
   SEXP_BIGNUM,
-#if SEXP_USE_RATIOS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RATIOS
   SEXP_RATIO,
 #endif
-#if SEXP_USE_COMPLEX
+#if SEXP_USE_STABLE_ABI || SEXP_USE_COMPLEX
   SEXP_COMPLEX,
 #endif
-#if SEXP_USE_DISJOINT_STRING_CURSORS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_DISJOINT_STRING_CURSORS
   SEXP_STRING_CURSOR,
 #endif
   SEXP_IPORT,
@@ -182,7 +188,7 @@ enum sexp_types {
   SEXP_ENV,
   SEXP_BYTECODE,
   SEXP_CORE,
-#if SEXP_USE_DL
+#if SEXP_USE_STABLE_ABI || SEXP_USE_DL
   SEXP_DL,
 #endif
   SEXP_OPCODE,
@@ -197,10 +203,10 @@ enum sexp_types {
   SEXP_CONTEXT,
   SEXP_CPOINTER,
   SEXP_UNIFORM_VECTOR,
-#if SEXP_USE_AUTO_FORCE
+#if SEXP_USE_STABLE_ABI || SEXP_USE_AUTO_FORCE
   SEXP_PROMISE,
 #endif
-#if SEXP_USE_WEAK_REFERENCES
+#if SEXP_USE_STABLE_ABI || SEXP_USE_WEAK_REFERENCES
   SEXP_EPHEMERON,
 #endif
   SEXP_NUM_CORE_TYPES
@@ -269,6 +275,9 @@ typedef int32_t sexp_int32_t;
 # include <ape/limits.h>
 # else
 # include <limits.h>
+# if SEXP_USE_UNIFORM_VECTOR_LITERALS
+# include <stdint.h>
+# endif
 # endif
 # if UCHAR_MAX == 255
 #  define SEXP_UINT8_DEFINED 1
@@ -287,7 +296,7 @@ typedef long sexp_int32_t;
 typedef unsigned short sexp_uint32_t;
 typedef short sexp_int32_t;
 # endif
-#endif
+#endif  /* SEXP_USE_INTTYPES */
 
 #if defined(__APPLE__) || defined(_WIN64) || (defined(__CYGWIN__) && __SIZEOF_POINTER__ == 8)
 #define SEXP_PRIdOFF "lld"
@@ -370,6 +379,7 @@ struct sexp_library_entry_t {   /* for static builds */
 };
 
 struct sexp_type_struct {
+  sexp name, cpl, slots, getters, setters, id, print, dl, finalize_name;
   sexp_tag_t tag;
   short field_base, field_eq_len_base, field_len_base, field_len_off;
   unsigned short field_len_scale;
@@ -377,14 +387,13 @@ struct sexp_type_struct {
   unsigned short size_scale;
   short weak_base, weak_len_base, weak_len_off, weak_len_scale, weak_len_extra;
   short depth;
-  sexp name, cpl, slots, getters, setters, id, print, dl, finalize_name;
   sexp_proc2 finalize;
 };
 
 struct sexp_opcode_struct {
-  unsigned char op_class, code, num_args, flags, inverse;
   sexp name, data, data2, proc, ret_type, arg1_type, arg2_type, arg3_type,
     argn_type, methods, dl;
+  unsigned char op_class, code, num_args, flags, inverse;
   sexp_proc1 func;
 };
 
@@ -398,6 +407,12 @@ struct sexp_mark_stack_ptr_t {
   struct sexp_mark_stack_ptr_t *prev; /* TODO: remove for allocations on stack */
 };
 
+/* Note this must be kept in sync with the _sexp_type_specs type            */
+/* registry in sexp.c.  The structure of a sexp type is:                    */
+/*   [ HEADER [[EQ_FIELDS... ] GC_FIELDS...] [WEAK_FIELDS...] [OTHER...] ]  */
+/* Thus all sexp's must be contiguous and align at the start of the type.   */
+/* This is used by the gc, equal? and slot-ref (although only the latter    */
+/* expects the alignment at the start of the type). */
 struct sexp_struct {
   sexp_tag_t tag;
   char markedp;
@@ -430,20 +445,23 @@ struct sexp_struct {
       char data SEXP_FLEXIBLE_ARRAY;
     } bytes;
     struct {
+      sexp bytes;
       unsigned char element_type;
       sexp_sint_t length;
-      sexp bytes;
     } uvector;
     struct {
 #if SEXP_USE_PACKED_STRINGS
+#if SEXP_USE_STRING_INDEX_TABLE
+      sexp charlens;
+#endif
       sexp_uint_t length;
       char data SEXP_FLEXIBLE_ARRAY;
 #else
-      sexp_uint_t offset, length;
       sexp bytes;
 #if SEXP_USE_STRING_INDEX_TABLE
       sexp charlens;
 #endif
+      sexp_uint_t offset, length;
 #endif
     } string;
     struct {
@@ -451,15 +469,15 @@ struct sexp_struct {
       char data SEXP_FLEXIBLE_ARRAY;
     } symbol;
     struct {
+      sexp name;
+      sexp cookie;
+      sexp fd;
       FILE *stream;
       char *buf;
       char openp, bidirp, binaryp, shutdownp, no_closep, sourcep,
         blockedp, fold_casep;
       sexp_uint_t offset, line, flags;
       size_t size;
-      sexp name;
-      sexp cookie;
-      sexp fd;
     } port;
     struct {
       char openp, no_closep;
@@ -480,27 +498,27 @@ struct sexp_struct {
       sexp real, imag;
     } complex;
     struct {
+      sexp parent;
       sexp_uint_t length;
       void *value;
-      sexp parent;
       char body SEXP_FLEXIBLE_ARRAY;
     } cpointer;
     /* runtime types */
     struct {
       sexp parent, lambda, bindings;
-#if SEXP_USE_RENAME_BINDINGS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_RENAME_BINDINGS
       sexp renames;
 #endif
     } env;
     struct {
-      sexp_uint_t length, max_depth;
       sexp name, literals, source;
+      sexp_uint_t length, max_depth;
       unsigned char data SEXP_FLEXIBLE_ARRAY;
     } bytecode;
     struct {
+      sexp bc, vars;
       char flags;
       sexp_proc_num_args_t num_args;
-      sexp bc, vars;
     } procedure;
     struct {
       sexp proc, env, source, aux;
@@ -542,6 +560,11 @@ struct sexp_struct {
       sexp data SEXP_FLEXIBLE_ARRAY;
     } stack;
     struct {
+      sexp stack, env, parent, child,
+        globals, dk, params, proc, name, specific, event, result;
+#if SEXP_USE_STABLE_ABI || SEXP_USE_DL
+      sexp dl;
+#endif
       sexp_heap heap;
       struct sexp_mark_stack_ptr_t mark_stack[SEXP_MARK_STACK_COUNT];
       struct sexp_mark_stack_ptr_t *mark_stack_ptr;
@@ -551,7 +574,7 @@ struct sexp_struct {
       unsigned char* ip;
       struct timeval tval;
 #endif
-      char tailp, tracep, timeoutp, waitp, errorp;
+      char tailp, tracep, timeoutp, waitp, errorp, interruptp;
       sexp_uint_t last_fp;
       sexp_uint_t gc_count;
 #if SEXP_USE_TIME_GC
@@ -564,19 +587,14 @@ struct sexp_struct {
 #if SEXP_USE_TRACK_ALLOC_SIZES
       sexp_uint_t alloc_histogram[SEXP_ALLOC_HISTOGRAM_BUCKETS];
 #endif
-      sexp stack, env, parent, child,
-        globals, dk, params, proc, name, specific, event, result;
-#if SEXP_USE_DL
-      sexp dl;
-#endif
     } context;
-#if SEXP_USE_AUTO_FORCE
+#if SEXP_USE_STABLE_ABI || SEXP_USE_AUTO_FORCE
     struct {
-      int donep;
       sexp value;
+      int donep;
     } promise;
 #endif
-#if SEXP_USE_WEAK_REFERENCES
+#if SEXP_USE_STABLE_ABI || SEXP_USE_WEAK_REFERENCES
     struct {
       sexp key, value;
     } ephemeron;
@@ -597,9 +615,10 @@ struct sexp_struct {
 #define SEXP_RAWDOT SEXP_MAKE_IMMEDIATE(7) /* internal use */
 #define SEXP_STRING_OPORT SEXP_MAKE_IMMEDIATE(8)  /* internal use */
 #define SEXP_TRAMPOLINE   SEXP_MAKE_IMMEDIATE(9)  /* internal use */
-#define SEXP_ABI_ERROR    SEXP_MAKE_IMMEDIATE(10) /* internal use */
+#define SEXP_UNCAUGHT     SEXP_MAKE_IMMEDIATE(10) /* internal use */
+#define SEXP_ABI_ERROR    SEXP_MAKE_IMMEDIATE(11) /* internal use */
 #if SEXP_USE_OBJECT_BRACE_LITERALS
-#define SEXP_CLOSE_BRACE  SEXP_MAKE_IMMEDIATE(11) /* internal use */
+#define SEXP_CLOSE_BRACE  SEXP_MAKE_IMMEDIATE(12) /* internal use */
 #endif
 
 #if SEXP_USE_LIMITED_MALLOC
@@ -954,8 +973,8 @@ SEXP_API int sexp_idp(sexp x);
 SEXP_API sexp sexp_make_integer_from_lsint(sexp ctx, sexp_lsint_t x);
 SEXP_API sexp sexp_make_unsigned_integer_from_luint(sexp ctx, sexp_luint_t x);
 #if SEXP_USE_CUSTOM_LONG_LONGS
-#define sexp_make_integer(ctx, x) sexp_make_fixnum(x)
-#define sexp_make_unsigned_integer(ctx, x) sexp_make_fixnum(x)
+SEXP_API sexp sexp_make_integer(sexp ctx, long long x);
+SEXP_API sexp sexp_make_unsigned_integer(sexp ctx, unsigned long long x);
 #else
 SEXP_API sexp sexp_make_integer(sexp ctx, sexp_lsint_t x);
 SEXP_API sexp sexp_make_unsigned_integer(sexp ctx, sexp_luint_t x);
@@ -1039,12 +1058,24 @@ SEXP_API sexp sexp_make_unsigned_integer(sexp ctx, sexp_luint_t x);
     sexp_negate_exact(x)
 
 #if SEXP_USE_FLONUMS || SEXP_USE_BIGNUMS
-#define sexp_uint_value(x) ((sexp_uint_t)(sexp_fixnump(x) ? sexp_unbox_fixnum(x) : sexp_bignump(x) ? sexp_bignum_data(x)[0] : 0))
-#define sexp_sint_value(x) ((sexp_sint_t)(sexp_fixnump(x) ? sexp_unbox_fixnum(x) : sexp_bignump(x) ? sexp_bignum_sign(x)*sexp_bignum_data(x)[0] : 0))
+
+#if SEXP_64_BIT
+#define sexp_bignum_to_sint(x) (sexp_bignum_sign(x)*sexp_bignum_data(x)[0])
+#define sexp_bignum_to_uint(x) (sexp_bignum_data(x)[0])
 #else
+SEXP_API long long sexp_bignum_to_sint(sexp x);
+SEXP_API unsigned long long sexp_bignum_to_uint(sexp x);
+#endif
+
+#define sexp_uint_value(x) ((unsigned long long)(sexp_fixnump(x) ? sexp_unbox_fixnum(x) : sexp_bignump(x) ? sexp_bignum_to_uint(x) : 0))
+#define sexp_sint_value(x) ((long long)(sexp_fixnump(x) ? sexp_unbox_fixnum(x) : sexp_bignump(x) ? sexp_bignum_to_sint(x) : 0))
+
+#else
+
 #define sexp_uint_value(x) ((sexp_uint_t)sexp_unbox_fixnum(x))
 #define sexp_sint_value(x) ((sexp_sint_t)sexp_unbox_fixnum(x))
-#endif
+
+#endif	/* SEXP_USE_FLONUMS || SEXP_USE_BIGNUMS */
 
 #define sexp_shift_epoch(x) ((x)-SEXP_EPOCH_OFFSET)
 #define sexp_unshift_epoch(x) ((x)+SEXP_EPOCH_OFFSET)
@@ -1348,6 +1379,7 @@ enum sexp_uniform_vector_type {
 
 #define sexp_context_result(x)   (sexp_field(x, context, SEXP_CONTEXT, result))
 #define sexp_context_errorp(x)   (sexp_field(x, context, SEXP_CONTEXT, errorp))
+#define sexp_context_interruptp(x) (sexp_field(x, context, SEXP_CONTEXT, interruptp))
 
 /* during compilation, sexp_context_specific is set to a vector */
 /* containing the following elements: */
@@ -1474,15 +1506,17 @@ SEXP_API sexp sexp_symbol_table[SEXP_SYMBOL_TABLE_SIZE];
 /****************************** utilities *****************************/
 
 enum sexp_context_globals {
-#if ! SEXP_USE_GLOBAL_SYMBOLS
+#if SEXP_USE_STABLE_ABI || ! SEXP_USE_GLOBAL_SYMBOLS
   SEXP_G_SYMBOLS,
 #endif
+  SEXP_G_ENDIANNESS,
   SEXP_G_TYPES,
   SEXP_G_FEATURES,
   SEXP_G_NUM_TYPES,
   SEXP_G_OOM_ERROR,             /* out of memory exception object */
   SEXP_G_OOS_ERROR,             /* out of stack exception object */
   SEXP_G_ABI_ERROR,             /* incompatible ABI loading library */
+  SEXP_G_INTERRUPT_ERROR,       /* C-c in the repl */
   SEXP_G_OPTIMIZATIONS,
   SEXP_G_SIGNAL_HANDLERS,
   SEXP_G_META_ENV,
@@ -1507,18 +1541,18 @@ enum sexp_context_globals {
   SEXP_G_RANDOM_SOURCE,
   SEXP_G_STRICT_P,
   SEXP_G_NO_TAIL_CALLS_P,
-#if SEXP_USE_FOLD_CASE_SYMS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_FOLD_CASE_SYMS
   SEXP_G_FOLD_CASE_P,
 #endif
-#if SEXP_USE_WEAK_REFERENCES
+#if SEXP_USE_STABLE_ABI || SEXP_USE_WEAK_REFERENCES
   SEXP_G_WEAK_OBJECTS_PRESENT,
   SEXP_G_FILE_DESCRIPTORS,
   SEXP_G_NUM_FILE_DESCRIPTORS,
 #endif
-#if ! SEXP_USE_BOEHM
+#if SEXP_USE_STABLE_ABI || ! SEXP_USE_BOEHM
   SEXP_G_PRESERVATIVES,
 #endif
-#if SEXP_USE_GREEN_THREADS
+#if SEXP_USE_STABLE_ABI || SEXP_USE_GREEN_THREADS
   SEXP_G_IO_BLOCK_ERROR,
   SEXP_G_IO_BLOCK_ONCE_ERROR,
   SEXP_G_THREAD_TERMINATE_ERROR,
@@ -1857,6 +1891,8 @@ SEXP_API int sexp_poll_port(sexp ctx, sexp port, int inputp);
 #define sexp_make_uvector(ctx, et, l) sexp_make_uvector_op(ctx, NULL, 2, et, l)
 #else
 #define sexp_make_uvector(ctx, et, l) sexp_make_vector(ctx, l, SEXP_ZERO)
+#define sexp_write_uvector NULL
+#define sexp_finalize_uvector NULL
 #endif
 #define sexp_make_string(ctx, l, c) sexp_make_string_op(ctx, NULL, 2, l, c)
 #define sexp_subbytes(ctx, a, b, c) sexp_subbytes_op(ctx, NULL, 3, a, b, c)

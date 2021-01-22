@@ -793,6 +793,10 @@
 (test #f (<= 1 2 1))
 (test #t (>= 2 1 1))
 (test #f (>= 1 2 1))
+(test #f (< +nan.0 0))
+(test #f (> +nan.0 0))
+(test #f (< +nan.0 0.0))
+(test #f (> +nan.0 0.0))
 (test '(#t #f) (list (<= 1 1 2) (<= 2 1 3)))
 
 ;; From R7RS 6.2.6 Numerical operations:
@@ -843,6 +847,7 @@
 (test #f (positive? -1.0))
 (test #t (positive? +inf.0))
 (test #f (positive? -inf.0))
+(test #f (positive? +nan.0))
 
 (test #f (negative? 0))
 (test #f (negative? 0.0))
@@ -852,6 +857,7 @@
 (test #t (negative? -1.0))
 (test #f (negative? +inf.0))
 (test #t (negative? -inf.0))
+(test #f (negative? +nan.0))
 
 (test #f (odd? 0))
 (test #t (odd? 1))
@@ -2392,6 +2398,9 @@
 ;; Combination of prefixes
 (test-numeric-syntax "#e#x10" 16 "16")
 (test-numeric-syntax "#i#x10" 16.0 "16.0" "16.")
+(test-numeric-syntax "#x#i10" 16.0 "16.0" "16.")
+(test-numeric-syntax "#i#x1/10" 0.0625 "0.0625")
+(test-numeric-syntax "#x#i1/10" 0.0625 "0.0625")
 ;; (Attempted) decimal notation with base prefixes
 (test-numeric-syntax "#d1." 1.0 "1.0" "1.")
 (test-numeric-syntax "#d.1" 0.1 "0.1" ".1" "100.0e-3")

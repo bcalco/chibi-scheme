@@ -91,13 +91,13 @@
         ((pred (to-id (car ls))) (cons (car ls) (id-filter pred (cdr ls))))
         (else (id-filter pred (cdr ls)))))
 
-(define (resolve-import x)
+(define (%resolve-import x)
   (cond
    ((not (and (pair? x) (list? x)))
     (error "invalid import syntax" x))
    ((and (memq (car x) '(prefix drop-prefix))
          (symbol? (car (cddr x))) (list? (cadr x)))
-    (let ((mod-name+imports (resolve-import (cadr x))))
+    (let ((mod-name+imports (%resolve-import (cadr x))))
       (cons (car mod-name+imports)
             (map (lambda (i)
                    (cons ((if (eq? (car x) 'drop-prefix)
@@ -110,7 +110,7 @@
                      (module-exports (find-module (car mod-name+imports))))))))
    ((and (pair? (cdr x)) (pair? (cadr x)))
     (if (memq (car x) '(only except rename))
-        (let* ((mod-name+imports (resolve-import (cadr x)))
+        (let* ((mod-name+imports (%resolve-import (cadr x)))
                (imp-ids (or (cdr mod-name+imports)
                             (and (not (eq? 'only (car x)))
                                  (module-exports
@@ -134,6 +134,29 @@
     => (lambda (mod) (cons x (%module-exports mod))))
    (else
     (error "couldn't find import" x))))
+
+;; slightly roundabout, using eval since we don't have env-define! here
+(define (auto-generate-bindings ls)
+  (let ((bound (env-exports *auto-env*))
+        (def-aux
+          (make-syntactic-closure *chibi-env* '() 'define-auxiliary-syntax)))
+    (let lp ((ls ls) (new '()))
+      (cond
+       ((null? ls)
+        (if (pair? new)
+            (eval `(,(make-syntactic-closure *chibi-env* '() 'begin) ,@new)
+                  *auto-env*)))
+       (else
+        (let ((from-id (if (pair? (car ls)) (cdar ls) (car ls))))
+          (if (memq from-id bound)
+              (lp (cdr ls) new)
+              (lp (cdr ls) `((,def-aux ,from-id) ,@new)))))))))
+
+(define (resolve-import x)
+  (let ((x (%resolve-import x)))
+    (if (equal? '(auto) (car x))
+        (auto-generate-bindings (cdr x)))
+    x))
 
 (define (resolve-module-imports env meta)
   (for-each
@@ -229,85 +252,100 @@
 (define define-library-transformer
   (er-macro-transformer
    (lambda (expr rename compare)
-     (let ((name (cadr expr))
-           (body (cddr expr))
-           (tmp (rename 'tmp))
-           (this-module (rename '*this-module*))
-           (_add-module! (rename 'add-module!))
-           (_make-module (rename 'make-module))
-           (_define (rename 'meta-define))
-           (_lambda (rename 'lambda))
-           (_let (rename 'let))
-           (_map (rename 'map))
-           (_if (rename 'if))
-           (_cond (rename 'cond))
-           (_set! (rename 'set!))
-           (_quote (rename 'quote))
-           (_and (rename 'and))
-           (_= (rename '=))
-           (_eq? (rename 'eq?))
-           (_pair? (rename 'pair?))
-           (_null? (rename 'null?))
-           (_reverse (rename 'reverse))
-           (_append (rename 'append))
-           (_assq (rename 'assq))
-           (_=> (rename '=>))
-           (_else (rename 'else))
-           (_length (rename 'length))
-           (_identifier->symbol (rename 'identifier->symbol))
-           (_error (rename 'error))
-           (_cons (rename 'cons))
-           (_car (rename 'car))
-           (_cdr (rename 'cdr))
-           (_caar (rename 'caar))
-           (_cadr (rename 'cadr))
-           (_cdar (rename 'cdar))
-           (_cddr (rename 'cddr)))
-       ;; Check for suspicious defines.
-       (for-each
-        (lambda (x)
-          (if (and (pair? x) (memq (strip-syntactic-closures (car x))
-                                   '(define define-syntax)))
-              (warn "suspicious use of define in library declarations - did you forget to wrap it in begin?" x)))
-        (cdr expr))
-       ;; Generate the library wrapper.
-       (set! *this-path*
-             (cons (string-concatenate
-                    (module-name->strings (cdr (reverse name)) '()))
-                   *this-path*))
-       `(,_let ((,tmp ,this-module))
-          (,_define (rewrite-export x)
-            (,_if (,_pair? x)
-                (,_if (,_and (,_= 3 (,_length x))
-                             (,_eq? (,_quote rename)
-                                    (,_identifier->symbol (,_car x))))
-                    (,_cons (,_car (,_cddr x)) (,_cadr x))
-                    (,_error "invalid module export" x))
-                x))
-          (,_define (extract-exports)
-            (,_cond
-             ((,_assq (,_quote export-all) ,this-module)
-              ,_=> (,_lambda (x)
-                     (,_if (,_pair? (,_cdr x))
-                         (,_error "export-all takes no parameters" x))
-                     #f))
-             (,_else
-              (,_let lp ((ls ,this-module) (res (,_quote ())))
-                (,_cond
-                 ((,_null? ls) res)
-                 ((,_and (,_pair? (,_car ls))
-                         (,_eq? (,_quote export) (,_caar ls)))
-                  (lp (,_cdr ls)
-                      (,_append (,_map rewrite-export (,_cdar ls)) res)))
-                 (,_else (lp (,_cdr ls) res)))))))
-          (,_set! ,this-module (,_quote ()))
-          ,@body
-          (,_add-module! (,_quote ,name)
-                         (,_make-module (extract-exports)
-                                        #f
-                                        (,_reverse ,this-module)))
-          (,_set! ,this-module ,tmp)
-          (,(rename 'pop-this-path)))))))
+     (cond
+      ((find (lambda (x) (and (pair? x) (compare (car x) (rename 'alias-for))))
+             (cddr expr))
+       => (lambda (alias)
+            (if (not (= 1 (length (cddr expr))))
+                (error "alias must be the only library declaration" expr))
+            ;; we need to load the original module first, not just find it,
+            ;; or else the includes would happen relative to the alias
+            (let ((name (cadr expr))
+                  (orig (load-module (cadr alias))))
+              (if (not orig)
+                  (error "couldn't find library to alias" (cadr alias))
+                  `(,(rename 'add-module!) (,(rename 'quote) ,name)
+                    (,(rename 'quote) ,orig))))))
+      (else
+       (let ((name (cadr expr))
+             (body (cddr expr))
+             (tmp (rename 'tmp))
+             (this-module (rename '*this-module*))
+             (_add-module! (rename 'add-module!))
+             (_make-module (rename 'make-module))
+             (_define (rename 'meta-define))
+             (_lambda (rename 'lambda))
+             (_let (rename 'let))
+             (_map (rename 'map))
+             (_if (rename 'if))
+             (_cond (rename 'cond))
+             (_set! (rename 'set!))
+             (_quote (rename 'quote))
+             (_and (rename 'and))
+             (_= (rename '=))
+             (_eq? (rename 'eq?))
+             (_pair? (rename 'pair?))
+             (_null? (rename 'null?))
+             (_reverse (rename 'reverse))
+             (_append (rename 'append))
+             (_assq (rename 'assq))
+             (_=> (rename '=>))
+             (_else (rename 'else))
+             (_length (rename 'length))
+             (_identifier->symbol (rename 'identifier->symbol))
+             (_error (rename 'error))
+             (_cons (rename 'cons))
+             (_car (rename 'car))
+             (_cdr (rename 'cdr))
+             (_caar (rename 'caar))
+             (_cadr (rename 'cadr))
+             (_cdar (rename 'cdar))
+             (_cddr (rename 'cddr)))
+         ;; Check for suspicious defines.
+         (for-each
+          (lambda (x)
+            (if (and (pair? x) (memq (strip-syntactic-closures (car x))
+                                     '(define define-syntax)))
+                (warn "suspicious use of define in library declarations - did you forget to wrap it in begin?" x)))
+          (cdr expr))
+         ;; Generate the library wrapper.
+         (set! *this-path*
+               (cons (string-concatenate
+                      (module-name->strings (cdr (reverse name)) '()))
+                     *this-path*))
+         `(,_let ((,tmp ,this-module))
+            (,_define (rewrite-export x)
+              (,_if (,_pair? x)
+                  (,_if (,_and (,_= 3 (,_length x))
+                               (,_eq? (,_quote rename)
+                                      (,_identifier->symbol (,_car x))))
+                      (,_cons (,_car (,_cddr x)) (,_cadr x))
+                      (,_error "invalid module export" x))
+                  x))
+            (,_define (extract-exports)
+              (,_cond
+               ((,_assq (,_quote export-all) ,this-module)
+                ,_=> (,_lambda (x)
+                       (,_if (,_pair? (,_cdr x))
+                           (,_error "export-all takes no parameters" x))
+                       #f))
+               (,_else
+                (,_let lp ((ls ,this-module) (res (,_quote ())))
+                  (,_cond
+                   ((,_null? ls) res)
+                   ((,_and (,_pair? (,_car ls))
+                           (,_eq? (,_quote export) (,_caar ls)))
+                    (lp (,_cdr ls)
+                        (,_append (,_map rewrite-export (,_cdar ls)) res)))
+                   (,_else (lp (,_cdr ls) res)))))))
+            (,_set! ,this-module (,_quote ()))
+            ,@body
+            (,_add-module! (,_quote ,name)
+                           (,_make-module (extract-exports)
+                                          #f
+                                          (,_reverse ,this-module)))
+            (,_set! ,this-module ,tmp)
+            (,(rename 'pop-this-path)))))))))
 
 (define-syntax define-library define-library-transformer)
 (define-syntax module define-library-transformer)
@@ -400,18 +438,29 @@
               (else
                (error "couldn't find module" (car ls))))))))))))
 
+;; capture a static copy of the current environment to serve
+;; as the (chibi) module
+(define *chibi-env*
+  (let ((env (make-environment)))
+    (%import env (interaction-environment) #f #t)
+    (env-parent env)))
+
+(define *auto-env*
+  (let ((env (make-environment)))
+    (%import env (interaction-environment)
+             '(_ => ... else unquote unquote-splicing) #t)
+    (env-parent env)))
+
 (define *modules*
   (list
    (cons '(chibi)
-         ;; capture a static copy of the current environment to serve
-         ;; as the (chibi) module
-         (let ((env (make-environment)))
-           (%import env (interaction-environment) #f #t)
-           (make-module #f (env-parent env) '((include "init-7.scm")))))
+         (make-module #f *chibi-env* '((include "init-7.scm"))))
    (cons '(chibi primitive)
          (make-module #f #f (lambda (env) (primitive-environment 7))))
    (cons '(meta)
          (make-module #f (current-environment) '((include "meta-7.scm"))))
+   (cons '(auto)
+         (make-module #f *auto-env* '()))
    (cons '(srfi 0)
          (make-module (list 'cond-expand)
                       (current-environment)

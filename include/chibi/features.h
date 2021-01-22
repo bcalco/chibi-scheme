@@ -216,7 +216,19 @@
 /*   You can configure with SEXP_STRING_INDEX_TABLE_CHUNK_SIZE below, */
 /*   the default is caching every 64th index (<=12.5% string overhead). */
 /*   With a minimum of 1 you'd have up to 8x string overhead, and */
-/*   string-ref would still be slightly slower than string-cursors. */
+/*   string-ref would still be slightly slower than string-cursors, */
+/*   and string-append would be marginally slower as well.          */
+/*                                                                  */
+/*   In practice, the overhead of iterating over a string with      */
+/*   string-ref isn't noticeable until about 10k chars.  Times      */
+/*   for iteration using the different approaches:                  */
+/*                                                                  */
+/*   impl\len               1000   10000  100000  1000000           */
+/*   string-ref (utf8)         1      97    9622        x           */
+/*   string-ref (fast)         0       2      19      216           */
+/*   cursor-ref (srfi 130)     0       4      18      150           */
+/*   text-ref (srfi 135)       2      27     211     2006           */
+/*                                                                  */
 /* #define SEXP_USE_STRING_INDEX_TABLE 1 */
 
 /* uncomment this to disable automatic closing of ports */
@@ -365,8 +377,18 @@
 #define SEXP_USE_PEDANTIC 0
 #endif
 
+/* this ensures public structs and enums are unchanged by feature toggles. */
+/* should generally be left at 1. */
+#ifndef SEXP_USE_STABLE_ABI
+#define SEXP_USE_STABLE_ABI 1
+#endif
+
 #ifndef SEXP_USE_GREEN_THREADS
+#if defined(_WIN32)
+#define SEXP_USE_GREEN_THREADS 0
+#else
 #define SEXP_USE_GREEN_THREADS ! SEXP_USE_NO_FEATURES
+#endif
 #endif
 
 #ifndef SEXP_USE_DEBUG_THREADS
@@ -813,7 +835,7 @@
 #endif
 
 #ifndef SEXP_USE_IMAGE_LOADING
-#define SEXP_USE_IMAGE_LOADING SEXP_USE_DL && !SEXP_USE_GLOBAL_HEAP && !SEXP_USE_BOEHM && !SEXP_USE_NO_FEATURES
+#define SEXP_USE_IMAGE_LOADING SEXP_USE_DL && SEXP_64_BIT && !SEXP_USE_GLOBAL_HEAP && !SEXP_USE_BOEHM && !SEXP_USE_NO_FEATURES
 #endif
 
 #ifndef SEXP_USE_UNSAFE_PUSH
